@@ -1,0 +1,146 @@
+PROCEDURE DatabaseName.PrCustomerChurn() -- Replace this with actual database name, Customer and table name (with prefix Pr) that you use
+
+BEGIN
+
+--**************************************************************************************************************
+
+DECLARE VarCurrentTimestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+DECLARE VarSourceRowCount, VarTargetRowCount, VarThresholdNbr INTEGER DEFAULT 0;
+DECLARE VarTinyIntVal TINYINT;
+
+--**************************************************************************************************************
+
+SELECT COUNT(*)
+INTO VarSourceRowCount
+FROM SourceTable/StageTable; -- Replace this with actual database name and table name (e.g., CustomerChurn_Stage) that you use.
+
+SELECT COUNT(*)
+INTO VarTargetRowCount
+FROM TargetTable; -- Replace this with actual database name and table name (e.g., CustomerChurn) that you use.
+
+-- (TargetCount * 20%)
+SELECT CAST((VarTargetRowCount * .2) AS UNSIGNED INTEGER)
+INTO VarThresholdNbr
+FROM DUAL; -- The DUMMY is system table which might vary from database to database. For your database, you need to figure out.
+
+--***********************************
+--Fail the Stored Proc if the Source Row Count is less than the Threshold Number (i.e., 20% of the Target Table row count).
+--This ensures that the Target table is not refreshed with incomplete set of Source Data
+
+IF VarSourceRowCount < VarThresholdNbr THEN
+
+SELECT -129
+INTO VarTinyIntVal
+FROM DUAL;
+
+END IF;
+
+--**************************************************************************************************************
+-- DELETE target table rows which are no longer available in source database table.
+
+DELETE
+FROM TargetTable AS TrgtTbl
+WHERE EXISTS
+(
+
+SELECT *
+FROM
+(
+SELECT Target Primary Key Column(s)
+
+FROM TargetTable AS TT  -- Example table name: CustomerChurn
+
+LEFT OUTER JOIN
+SourceTable/StageTable AS ST  -- Example table name: CustomerChurn_Stage
+ON TT.Primary Key Column(s) = ST.Primary Key Column(s)
+
+WHERE ST.Primary Key Column(s) IS NULL
+
+) AS SrcTbl
+
+WHERE TrgtTbl.Primary Key Column1 = SrcTbl.Primary Key Column1
+AND TrgtTbl.Primary Key Column2 = SrcTbl.Primary Key Column2
+AND ...
+
+);
+
+-- **************************UPDATE ROWS THAT CHANGED IN SOURCE******************************************
+-- Update the rows for which new version of rows have arrived as part of delta/incremental feed (i.e., change to non-key values).
+
+UPDATE TargetTable AS TrgtTbl
+
+INNER JOIN
+SourceTable/StageTable AS SrcTbl
+
+ON  TrgtTbl.Primary Key Column1 = SrcTbl.Primary Key Column1
+AND TrgtTbl.Primary Key Column2 = SrcTbl.Primary Key Column2
+AND ...
+
+SET TrgtTbl.Non-Primary Key Column1 = SrcTbl.Non-Primary Key Column1,
+    TrgtTbl.Non-Primary Key Column2 = SrcTbl.Non-Primary Key Column2,
+    TrgtTbl.Non-Primary Key Column3 = SrcTbl.Non-Primary Key Column3,
+    TrgtTbl."ChangeDtm" = :VarCurrentTimestamp
+
+WHERE (
+      COALESCE(TrgtTbl.Non-Primary Key Column1,'*') <> COALESCE(SrcTbl.Non-Primary Key Column1,'*')
+   OR COALESCE(TrgtTbl.Non-Primary Key Column2,'*') <> COALESCE(SrcTbl.Non-Primary Key Column2,'*') 
+   OR COALESCE(TrgtTbl.Non-Primary Key Column3,'*') <> COALESCE(SrcTbl.Non-Primary Key Column3,'*') 
+   ...
+  );
+
+-- ****************************INSERT BRAND NEW ROWS INTO TARGET****************************************
+-- Identify brand new rows in source table and load into target table.
+
+INSERT INTO  TargetTable
+(
+Primary Key Column1                                         
+,Primary Key Column2
+---,Primary Key Column3
+,Non-Primary Key Column1
+,Non-Primary Key Column2
+,Non-Primary Key Column3
+
+,"SourceSystemNm" -- Non-Primary Key
+,"CreateAgentId" -- Non-Primary Key
+,"CreateDtm" -- Non-Primary Key
+,"ChangeAgentId" -- Non-Primary Key
+,"ChangeDtm" -- Non-Primary Key
+)
+SELECT 
+SrcTbl.Primary Key Column1                                         
+,SrcTbl.Primary Key Column2
+---,SrcTbl.Primary Key Column3 ... list all PK columns based on your source/taget table primary key(s)
+,SrcTbl.Non-Primary Key Column1
+,SrcTbl.Non-Primary Key Column2
+,SrcTbl.Non-Primary Key Column3
+
+'Kaggle-CSV' AS SourceSystemNm,
+current_user() AS CreateAgentId,
+VarCurrentTimestamp AS CreateDtm,
+current_user() AS ChangeAgentId,
+VarCurrentTimestamp AS ChangeDtm
+
+FROM SourceTable/StageTable AS SrcTbl
+
+INNER JOIN
+(
+SELECT Source Primary Key Column(s)
+
+FROM SourceTable/StageTable AS ST
+
+LEFT OUTER JOIN
+TargetTable AS TT
+ON ST.Primary Key Column(s) = TT.Primary Key Column(s)
+
+WHERE TT.Primary Key Column(s) IS NULL
+
+) AS ChgdNew
+
+ON  SrcTbl.Primary Key Column1 = ChgdNew.Primary Key Column1
+AND SrcTbl.Primary Key Column2 = ChgdNew.Primary Key Column2
+AND ...
+;
+
+--**************************************************************************************************************
+
+END;
